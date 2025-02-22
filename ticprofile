@@ -1,0 +1,106 @@
+import pandas as pd
+import sqlite3
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+from flask import Flask, request, render_template_string  # Optional web UI
+
+# Sample data (replace with your CSV or DB)
+data = [
+    {"Org_Name": "Reserve Bank of Australia", "Country": "Australia", "TIC_Code": "60089", "Domain": "rba.gov.au", "Type": "Central Bank"},
+    {"Org_Name": "Bank of Japan", "Country": "Japan", "TIC_Code": "42609", "Domain": "boj.or.jp", "Type": "Central Bank"},
+    {"Org_Name": "Apple Inc.", "State": "California", "CUSIP": "037833100", "Domain": "apple.com", "Type": "Corporation"},
+    {"Org_Name": "JPMorgan Chase & Co.", "State": "New York", "CUSIP": "46625H100", "Domain": "jpmorganchase.com", "Type": "Financial Services"},
+]
+df = pd.DataFrame(data)
+
+# Save to SQLite (simulating prior directory)
+conn = sqlite3.connect("treasury_profiles.db")
+df.to_sql("Profiles", conn, if_exists="replace", index=False)
+
+# Build search index
+class TreasurySearchEngine:
+    def __init__(self, db_path="treasury_profiles.db"):
+        self.conn = sqlite3.connect(db_path)
+        self.df = pd.read_sql_query("SELECT * FROM Profiles", self.conn)
+        self.vectorizer = TfidfVectorizer()
+        self.index = self._build_index()
+
+    def _build_index(self):
+        # Combine searchable fields into a single text column
+        searchable = self.df.apply(lambda row: f"{row['Org_Name']} {row.get('Country', row.get('State', ''))} {row.get('TIC_Code', row.get('CUSIP', ''))} {row['Domain']} {row['Type']}", axis=1)
+        return self.vectorizer.fit_transform(searchable)
+
+    def search(self, query, top_n=5):
+        # Vectorize query and compute similarity
+        query_vec = self.vectorizer.transform([query])
+        similarities = cosine_similarity(query_vec, self.index).flatten()
+        top_indices = similarities.argsort()[-top_n:][::-1]
+        return self.df.iloc[top_indices], similarities[top_indices]
+
+    def compare_profiles(self, indices):
+        # Return profiles for comparison
+        return self.df.iloc[indices].to_dict(orient="records")
+
+# CLI Example
+def run_cli():
+    engine = TreasurySearchEngine()
+    while True:
+        query = input("\nEnter search query (or 'quit' to exit): ")
+        if query.lower() == "quit":
+            break
+
+        results, scores = engine.search(query)
+        print("\nSearch Results:")
+        print("-" * 80)
+        for idx, (row, score) in enumerate(zip(results.itertuples(), scores)):
+            print(f"{idx+1}. {row.Org_Name} (Score: {score:.3f})")
+            for col in results.columns:
+                print(f"   {col}: {getattr(row, col)}")
+
+        # Comparison
+        compare = input("\nEnter indices to compare (e.g., '0 1'): ")
+        if compare:
+            indices = [int(i) for i in compare.split()]
+            comparison = engine.compare_profiles(indices)
+            print("\nComparison:")
+            print("-" * 80)
+            for profile in comparison:
+                print("\n".join(f"{k}: {v}" for k, v in profile.items()))
+                print("-" * 40)
+
+# Flask Web App (Optional)
+app = Flask(__name__)
+
+@app.route("/", methods=["GET", "POST"])
+def search_page():
+    engine = TreasurySearchEngine()
+    results_html = ""
+    if request.method == "POST":
+        query = request.form.get("query", "")
+        results, scores = engine.search(query)
+        results_html = "<h2>Results</h2><ul>"
+        for idx, (row, score) in enumerate(zip(results.itertuples(), scores)):
+            results_html += f"<li><b>{row.Org_Name}</b> (Score: {score:.3f})<br>"
+            results_html += "<br>".join(f"{col}: {getattr(row, col)}" for col in results.columns)
+            results_html += "</li><br>"
+        results_html += "</ul>"
+
+    html = f"""
+    <h1>Treasury Profile Search Engine</h1>
+    <form method="POST">
+        <input type="text" name="query" placeholder="Enter search term">
+        <input type="submit" value="Search">
+    </form>
+    {results_html}
+    """
+    return render_template_string(html)
+
+if __name__ == "__main__":
+    # Run CLI
+    print("Running CLI mode...")
+    run_cli()
+
+    # Uncomment to run Flask web app instead
+    # print("Running web app on http://127.0.0.1:5000")
+    # app.run(debug=True)
