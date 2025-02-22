@@ -1,0 +1,65 @@
+from flask import Flask, request, jsonify
+from elasticsearch import Elasticsearch
+
+# Initialize Flask & Elasticsearch
+app = Flask(__name__)
+es = Elasticsearch("http://localhost:9200")  # Make sure Elasticsearch is running
+
+# Define Index Mapping for Treasury Identifiers
+def create_index():
+    mapping = {
+        "mappings": {
+            "properties": {
+                "treasury_id": {"type": "keyword"},
+                "domain": {"type": "keyword"},
+                "ip_address": {"type": "ip"},
+                "content": {"type": "text", "analyzer": "standard"},
+                "census_block": {"type": "keyword"},
+                "isp": {"type": "keyword"},
+                "employee_tree": {"type": "nested", "properties": {
+                    "parent_id": {"type": "keyword"},
+                    "employee_id": {"type": "keyword"},
+                    "position": {"type": "text"}
+                }}
+            }
+        }
+    }
+    es.indices.create(index="treasury_search", body=mapping, ignore=400)
+
+# Sample Function to Index a Web Document
+def index_document(treasury_id, domain, ip_address, content, census_block, isp, employee_tree):
+    doc = {
+        "treasury_id": treasury_id,
+        "domain": domain,
+        "ip_address": ip_address,
+        "content": content,
+        "census_block": census_block,
+        "isp": isp,
+        "employee_tree": employee_tree
+    }
+    es.index(index="treasury_search", body=doc)
+
+# Search API Endpoint
+@app.route("/search", methods=["GET"])
+def search():
+    query = request.args.get("q")
+    treasury_id = request.args.get("treasury_id")
+    census_block = request.args.get("census_block")
+    isp = request.args.get("isp")
+    
+    es_query = {"bool": {"must": [{"match": {"content": query}}]}}
+    
+    if treasury_id:
+        es_query["bool"].setdefault("filter", []).append({"term": {"treasury_id": treasury_id}})
+    if census_block:
+        es_query["bool"].setdefault("filter", []).append({"term": {"census_block": census_block}})
+    if isp:
+        es_query["bool"].setdefault("filter", []).append({"term": {"isp": isp}})
+    
+    results = es.search(index="treasury_search", body={"query": es_query})
+    
+    return jsonify(results["hits"]["hits"])
+
+if __name__ == "__main__":
+    create_index()  # Ensure index exists
+    app.run(debug=True)
